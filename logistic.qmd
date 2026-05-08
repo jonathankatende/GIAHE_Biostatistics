@@ -1,0 +1,196 @@
+---
+title: "Logistic Regression: Diabetes Prediction"
+subtitle: "From Full Models to Optimized Signal"
+author: "Jonathan Pinto"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-summary: "Show Code"
+    theme: cosmo
+    highlight-style: dracula
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## 1. Introduction {background-color="#2c3e50"}
+
+In Logistic Regression, we model the probability of a binary outcome (0 or 1).
+
+- **Outcome**: Diabetes (1) or No Diabetes (0).
+- **Goal**: Identify which clinical factors (Glucose, BMI, Age, etc.) drive the risk.
+- **Method**: Likelihood ratio tests and AIC for selection.
+
+## 2. Setup & Data Exploration
+
+```{r}
+#| label: setup
+library(tidyverse)
+library(gtsummary)
+library(caret)
+library(broom)
+library(pROC)
+library(dplyr)
+library(ggplot2)
+
+data <- read.csv("diabetes.csv")
+
+# Ensure Outcome is a factor
+data <- data %>%
+  mutate(Outcome = factor(Outcome, levels = c(0, 1), labels = c("No", "Yes")))
+```
+
+## 3. Clinical Table 1
+
+```{r}
+#| label: table1
+data %>%
+  tbl_summary(by = Outcome) %>%
+  add_p() %>%
+  bold_labels()
+```
+
+## 4. The "Noisy" Full Model
+
+```{r}
+#| label: full-model
+
+full_model_all <- glm(Outcome ~ ., data = data, family = binomial)
+
+full_model_all %>% 
+  tbl_regression(exponentiate = TRUE) %>%
+  bold_p()
+```
+
+## 5. Model Optimization: Forward Selection
+
+```{r}
+#| label: forward-selection
+#| results: hide
+
+# Null model
+null_model <- glm(Outcome ~ 1, data = data, family = binomial)
+
+# Full model (defined explicitly)
+full_model_defined <- glm(
+  Outcome ~ Pregnancies + Glucose + BloodPressure + SkinThickness + 
+    Insulin + BMI + DiabetesPedigreeFunction + Age, 
+  data = data, 
+  family = binomial
+)
+
+# Forward selection
+forward_model <- step(
+  null_model, 
+  scope = list(lower = null_model, upper = full_model_defined), 
+  direction = "forward",
+  trace = 0
+)
+```
+
+## Comparison: Full vs Forward Model
+
+```{r}
+#| label: comparison
+
+full_table <- full_model_defined %>% 
+  tbl_regression(exponentiate = TRUE)
+
+forward_table <- forward_model %>% 
+  tbl_regression(exponentiate = TRUE) %>% 
+  bold_labels()
+
+tbl_merge(
+  list(full_table, forward_table),
+  tab_spanner = c("**Full Model (Initial)**", "**Forward Selected Model**")
+)
+```
+
+## Visualizing Odds Ratios
+
+```{r}
+#| label: or-plot
+#| fig-cap: "Forest Plot of Odds Ratios (Forward Model)"
+
+plot_data <- tidy(forward_model, exponentiate = TRUE, conf.int = TRUE) %>%
+  filter(term != "(Intercept)")
+
+ggplot(plot_data, aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  geom_point(size = 3, color = "#2E9FDF") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  scale_x_log10() +
+  labs(
+    title = "Odds Ratios: Forward Selection Results",
+    subtitle = "Variables selected based on AIC optimization",
+    x = "Odds Ratio (Log Scale)",
+    y = ""
+  ) +
+  theme_minimal()
+```
+
+## Results summary
+
+```{r}
+#| label: forward-summary
+
+summary(forward_model)
+```
+
+## 6. Model Validation (ROC Curve)
+
+```{r}
+#| label: roc-curve
+
+# Predicted probabilities
+probs <- predict(forward_model, type = "response")
+
+# ROC
+roc_obj <- roc(data$Outcome, probs)
+
+plot(
+  roc_obj, 
+  col = "#2E9FDF", 
+  lwd = 3,
+  main = paste("ROC Curve (AUC =", round(auc(roc_obj), 3), ")")
+)
+```
+
+## 7. Calibration
+
+```{r}
+#| label: calibration
+
+# 1. Use the correct model name (forward_model)
+data$pred <- predict(forward_model, type = "response")
+
+# 2. Convert the Factor "Outcome" to numeric 0/1 for calculating means
+calib_data <- data %>%
+  mutate(
+    # In R, factors No/Yes are stored as 1/2. Subtracting 1 gives 0/1.
+    outcome_num = as.numeric(Outcome) - 1,
+    bin = ntile(pred, 10)
+  ) %>%
+  group_by(bin) %>%
+  summarise(
+    pred_mean = mean(pred),
+    obs_mean = mean(outcome_num)
+  )
+
+# 3. Plot
+ggplot(calib_data, aes(x = pred_mean, y = obs_mean)) +
+  geom_point(size = 3, color = "#2E9FDF") +
+  geom_line(color = "#2E9FDF") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Calibration Plot",
+    subtitle = "Predicted vs. Observed Diabetes Prevalence",
+    x = "Predicted Probability",
+    y = "Observed Probability"
+  ) +
+  theme_minimal()
+```
+

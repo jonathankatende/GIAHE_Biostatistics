@@ -1,0 +1,351 @@
+---
+title: "From Simple to Multiple Regression in Global Health"
+subtitle: "Confounding, Causality, and AI Perspectives (One Health)"
+author: "Pinto Jonathan Katende"
+email: "jonathankatende.pinto@ubep.unipd.it"
+date: last-modified
+format:
+  html:
+    toc: true
+    toc-float: true
+    code-fold: true
+    code-summary: "View R Code"
+    number-sections: false
+execute:
+  warning: false
+  message: false
+---
+
+## 1. Introduction
+
+### 1.1 Research Question
+
+> Does increasing environmental exposure (e.g., air pollution) increase disease risk?
+
+We begin with a simple model, then progressively uncover hidden biases and complexity.
+
+---
+
+## 2. Data Simulation: A One-Health Perspective
+
+```{r}
+#| label: setup
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+library(gtsummary)
+library(car)
+library(lmtest)
+library(ggeffects)
+library(ggpubr)
+library(performance)
+library(see)
+library(corrplot)
+
+generate_complex_data <- function(n = 200, seed = 42){
+  set.seed(seed)
+  
+  age <- round(runif(n, 20, 80))
+  BMI <- round(rnorm(n, 25, 4), 1)
+  comorbidity <- sample(c("High", "Low"), n, replace = TRUE)
+  comorb_numeric <- ifelse(comorbidity == "High", 1, 0)
+  
+  # One Health exposure (PM2.5 air pollution)
+  air_pollution_level <- round(5 + (0.15 * age) + (0.4 * BMI) + 
+                         (4 * comorb_numeric) + rnorm(n, 0, 3), 1)
+  
+  # Health outcome
+  disease_risk <- round(10 + (0.5 * air_pollution_level) +
+                  (-0.2 * age) +
+                  (-5 * comorb_numeric) +
+                  rnorm(n, 0, 2), 1)
+  
+  data.frame(age, BMI, comorbidity, air_pollution_level, disease_risk)
+}
+
+data <- generate_complex_data()
+
+data$comorbidity <- ifelse(data$comorbidity == "High", "Low", "High")
+data$comorbidity <- factor(data$comorbidity, levels = c("Low", "High"))
+  
+kable(head(data), caption = "Table 1: Baseline characteristics of the simulated cohort") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+```
+
+---
+
+## 3. The Naive Approach
+
+### 3.1 Simple Linear Regression
+
+```{r}
+#| label: simple-model
+model_simple <- lm(disease_risk ~ air_pollution_level, data = data)
+summary(model_simple)
+```
+
+---
+
+### 3.2 Visualization
+
+```{r}
+#| label: plot-simple
+ggplot(data, aes(air_pollution_level, disease_risk)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Naive Relationship: Air Pollution vs Disease Risk") +
+  theme_minimal()
+```
+
+---
+
+## 4. Hidden Structure: Confounding
+
+### 4.1 Correlation Between Predictors
+
+```{r}
+#| label: correlation
+#| fig-width: 8
+#| fig-height: 8
+
+cor(data$air_pollution_level, data$age)
+cor(data$age, data$disease_risk)
+
+
+data_num <- data %>% select(-comorbidity)
+cor_matrix <- cor(data_num)
+testRes <- psych::corr.test(data_num, adjust = "none")
+
+corrplot(cor_matrix,
+         p.mat = testRes$p, 
+         method = 'circle', 
+         type = 'lower', 
+         insig = 'blank', 
+         addCoef.col = 'black', 
+         number.cex = 0.8, 
+         order = 'AOE', 
+         diag = FALSE)
+```
+
+> Age is moderately correlated with air pollution exposure (r = 0.54) and strongly associated with disease risk (r = -0.62), indicating a substantial confounding effect. Adjusting for age is therefore essential to obtain an unbiased estimate of the exposure–outcome relationship
+
+---
+
+### 4.2 Interpretation
+
+Age influences both:
+
+* exposure (air pollution)
+* outcome (disease risk)
+
+  This creates **confounding bias**
+
+---
+
+## 5. The Adjustment
+
+### 5.1 Multiple Linear Regression
+
+```{r}
+#| label: multiple-model
+model_full <- lm(disease_risk ~ air_pollution_level + age + BMI + comorbidity, data = data)
+
+tbl_merge(
+  list(
+    tbl_regression(model_simple),
+    tbl_regression(model_full)
+  ),
+  tab_spanner = c("**Naive Model**", "**Adjusted Model**")
+)
+```
+
+---
+
+### 5.2 Key Insight
+
+If the coefficient of air pollution changes → **confounding exists**
+
+---
+
+## 6. Model Refinement
+
+### 6.1 Variable Selection (AIC)
+
+```{r}
+#| label: selection
+
+model_full <- lm(disease_risk ~ air_pollution_level + age + BMI + comorbidity, data = data)
+
+# Backward selection
+model_final <- step(model_full, direction = "backward")
+
+summary(model_final)
+```
+
+---
+
+### AI Perspective
+
+> Stepwise selection is a **primitive machine learning approach**.
+
+Modern AI methods use:
+
+* **Lasso (L1 regularization)**
+* **Ridge (L2 regularization)**
+
+These methods:
+
+* handle high-dimensional data
+* reduce overfitting
+* perform automatic feature selection
+
+> While step() chooses which variables to keep, the Lasso "overwrites" unnecessary variables to zero, which is much more efficient when you have 200 predictors instead of 4.
+
+---
+
+## 7. Model Diagnostics
+
+### 7.1 Global Diagnostic
+
+```{r}
+#| label: diagnostics
+#| fig-width: 10
+#| fig-height: 12
+check_model(model_final)
+```
+
+  This replaces multiple manual plots with a **clean, unified diagnostic panel**
+
+---
+
+### 7.2 Statistical Tests
+
+```{r}
+#| label: tests
+
+#independence of residuals
+dwtest(model_final)
+
+# Homoscedasticity
+bptest(model_final)
+
+# Normality
+shapiro.test(resid(model_final))
+
+# Multicollinearity
+vif(model_final)
+```
+
+---
+
+## 8. Interaction Effects
+
+### 8.1 Motivation
+
+Does pollution affect everyone equally?
+
+  Maybe not - it may depend on age.
+
+---
+
+### 8.2 Simulation with Interaction
+
+```{r}
+#| label: interaction-data
+
+generate_interaction_data <- function(n = 250, seed = 42){
+  set.seed(seed)
+  
+  age <- round(runif(n, 20, 80))
+  comorbidity <- sample(c("Low", "High"), n, replace = TRUE)
+  comorb_numeric <- ifelse(comorbidity == "High", 1, 0)
+  
+  air_pollution_level <- 5 + (0.3 * age) + (4 * comorb_numeric) + rnorm(n, 0, 3)
+  
+  disease_risk <- 10 + (0.7 * air_pollution_level) +
+                  (-0.1 * age) +
+                  (-0.01 * air_pollution_level * age) +
+                  (-5 * comorb_numeric) +
+                  rnorm(n, 0, 2)
+  
+  data.frame(age, comorbidity, air_pollution_level, disease_risk)
+}
+
+data_inter <- generate_interaction_data()
+
+data_inter$comorbidity <- ifelse(data_inter$comorbidity == "High", "Low", "High")
+data_inter$comorbidity <- factor(data_inter$comorbidity, levels = c("Low", "High"))
+```
+
+---
+
+### 8.3 Interaction Model
+
+```{r}
+#| label: interaction-model
+
+model_inter <- lm(disease_risk ~ air_pollution_level * age + comorbidity, data = data_inter)
+
+model_inter %>% 
+  tbl_regression(
+    label = list(
+      air_pollution_level ~ "Air Pollution",
+      age ~ "Age",
+      `air_pollution_level:age` ~ "Pollution × Age Interaction"
+    )
+  ) %>%
+  bold_p()
+```
+
+---
+
+### 8.4 Visualization
+
+```{r}
+#| label: interaction-plot
+
+data_inter %>%
+  mutate(age_group = cut(age, breaks = 3)) %>%
+  ggplot(aes(x = air_pollution_level, y = disease_risk, color = age_group)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_minimal()
+```
+
+---
+
+## 9. Marginal Effects (AI-friendly interpretation)
+
+```{r}
+#| label: ggeffects
+
+pred <- ggpredict(model_inter, terms = c("air_pollution_level", "age [30,50,70]"))
+
+plot(pred) +
+  labs(
+    title = "Marginal Effect of Air Pollution by Age",
+    subtitle = "Effect decreases with increasing age",
+    x = "Air Pollution (PM2.5)",
+    y = "Predicted Disease Risk"
+  )
+```
+
+---
+
+## 10. Conclusion
+
+We have shown that:
+
+* Simple models can be misleading
+* Confounding biases estimates
+* Multiple regression corrects bias
+* Interaction reveals population heterogeneity
+* AI methods extend these ideas to complex datasets
+
+---
+
+## Final Takeaway
+
+> A good model is not the simplest one,
+> but the one that reflects the true data-generating process.

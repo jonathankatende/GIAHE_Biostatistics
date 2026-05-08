@@ -1,0 +1,908 @@
+---
+title: "From Linear Models to GAM"
+subtitle: "Understanding Non-Linearity in Global Health and One Health Systems"
+author: "Jonathan Katende Pinto"
+date: last-modified
+format:
+  pdf:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+## 1. Introduction: The Illusion of Linearity
+
+We often start with a simple assumption:
+
+> Increasing environmental exposure leads to proportional increase in health risk.
+
+This naturally leads to linear regression.
+
+However, environmental and epidemiological systems are rarely linear.
+
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(mgcv)
+library(gtsummary)
+library(gratia)
+library(knitr)
+library(performance)
+```
+
+## 2. Simulating an Environmental Health Reality
+
+```{r}
+#| label: simulation-visual
+
+set.seed(123)
+
+n <- 150
+
+air_pollution_level <- runif(n, 0, 100)
+
+max_population_risk <- 100
+exposure_half_risk <- 20
+
+respiratory_risk <- 
+  (max_population_risk * air_pollution_level) /
+  (exposure_half_risk + air_pollution_level) +
+  rnorm(n, 0, 5)
+
+df <- data.frame(
+  air_pollution_level,
+  respiratory_risk
+)
+
+ggplot(df, aes(air_pollution_level, respiratory_risk)) +
+  geom_point(alpha = 0.5) +
+
+  geom_smooth(
+    aes(color = "True pattern (loess)"),
+    method = "loess",
+    se = FALSE,
+    size = 1.2
+  ) +
+
+  geom_smooth(
+    aes(color = "Linear model"),
+    method = "lm",
+    formula = y ~ x,
+    linetype = "dashed",
+    se = FALSE
+  ) +
+
+  scale_color_manual(
+    name = "Model",
+    values = c(
+      "True pattern (loess)" = "blue",
+      "Linear model" = "red"
+    )
+  ) +
+
+  labs(
+    title = "Environmental Exposure and Health Risk",
+    x = "Air Pollution Level",
+    y = "Respiratory Risk"
+  ) +
+
+  theme_minimal()
+```
+
+---
+
+## 3. The Wrong Model: Linear Regression
+
+The linear model assumes:
+
+$$
+Y = \beta_0 + \beta_1 X + \varepsilon
+$$
+
+This implies a constant increase in health risk for each additional unit of environmental exposure.
+
+```{r}
+#| label: lm
+
+model_lm_simple <- lm(
+  respiratory_risk ~ air_pollution_level,
+  data = df
+)
+
+ggplot(df, aes(air_pollution_level, respiratory_risk)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  labs(
+    title = "Linear Model: Incorrect Assumption",
+    x = "Air Pollution Level",
+    y = "Respiratory Risk"
+  ) +
+  theme_minimal()
+
+summary(model_lm_simple)
+```
+
+---
+
+## 4. The Diagnostic: Residuals
+
+```{r}
+#| label: residuals
+
+ggplot(model_lm_simple, aes(.fitted, .resid)) +
+  geom_point() +
+  geom_smooth(method = "loess", color = "red") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Residual Pattern",
+    subtitle = "Non-random pattern indicates model misspecification",
+    x = "Fitted values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+```
+
+> Residuals are not just diagnostics — they often reveal when the model is misspecified.
+
+A correct model should produce residuals randomly scattered around zero.
+
+---
+
+## 5. Polynomial Regression
+
+To capture curvature, we extend the linear model:
+
+$$
+Y = \beta_0 + \beta_1 X + \beta_2 X^2 + \varepsilon
+$$
+
+This allows the model to bend, but it still does not represent the true environmental mechanism.
+
+```{r}
+#| label: polynomial
+
+model_poly <- lm(
+  respiratory_risk ~ air_pollution_level + I(air_pollution_level^2),
+  data = df
+)
+
+ggplot(df, aes(air_pollution_level, respiratory_risk)) +
+  geom_point() +
+  geom_smooth(
+    method = "lm",
+    formula = y ~ x + I(x^2),
+    color = "purple"
+  ) +
+  labs(
+    title = "Polynomial Regression",
+    x = "Air Pollution Level",
+    y = "Respiratory Risk"
+  ) +
+  theme_minimal()
+
+summary(model_poly)
+```
+
+Polynomial regression improves the fit by introducing curvature, but it remains a statistical approximation.
+
+Although the model captures non-linearity, it introduces an artificial decline in risk at high exposure levels, which is not epidemiologically plausible.
+
+> A good fit does not imply a correct model.
+
+---
+
+### Interpretation
+
+The fitted model can be written as:
+
+$$
+Risk = 19.33 + 1.51(Exposure) - 0.009(Exposure^2)
+$$
+
+* The positive linear term indicates an initial increase in health risk.
+* The negative quadratic term introduces curvature and diminishing returns.
+
+The model predicts a maximum risk at:
+
+$$
+Exposure_{max} = \frac{-\beta_1}{2\beta_2}
+$$
+
+However, the decline beyond this point is artificial and does not reflect the true exposure–risk mechanism.
+
+---
+
+## 6. Model Comparison
+
+### 6.1 ANOVA Comparison
+
+```{r}
+#| label: anova-lm
+
+model_base <- lm(
+  respiratory_risk ~ air_pollution_level,
+  data = df
+)
+
+model_extended <- lm(
+  respiratory_risk ~ air_pollution_level + I(air_pollution_level^2),
+  data = df
+)
+
+anova(model_base, model_extended)
+```
+
+### Interpretation
+
+* p-value < 0.05 → the additional term improves the model
+* p-value > 0.05 → the simpler model is sufficient
+
+---
+
+## 7. The Temptation: Transformations
+
+```{r}
+#| label: log-transform
+
+df_log <- df %>%
+  mutate(log_exposure = log(air_pollution_level + 1))
+
+model_log <- lm(
+  respiratory_risk ~ log_exposure,
+  data = df_log
+)
+
+ggplot(df_log, aes(log_exposure, respiratory_risk)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "purple") +
+  labs(
+    title = "Log Transformation",
+    x = "Log Exposure",
+    y = "Respiratory Risk"
+  ) +
+  theme_minimal()
+```
+
+### Why transformations can fail
+
+* They distort interpretation
+* They may introduce heteroscedasticity
+* They force the data into a linear structure
+
+---
+
+## 8. Non-linear Least Squares (NLS)
+
+Instead of transforming the data, we directly model the environmental mechanism:
+
+$$
+Risk = \frac{R_{max} \cdot Exposure}{E_{50} + Exposure} + \varepsilon
+$$
+
+Where:
+
+* (R_{max}): maximum achievable population risk
+* (E_{50}): exposure level associated with 50% of the maximum risk
+
+```{r}
+#| label: nls
+
+model_nls <- nls(
+  respiratory_risk ~ 
+    (Rmax * air_pollution_level) /
+    (E50 + air_pollution_level),
+  data = df,
+  start = list(Rmax = 80, E50 = 10)
+)
+
+summary(model_nls)
+```
+
+```{r}
+#| label: nls-plot
+
+df$pred_nls <- predict(model_nls)
+
+ggplot(df, aes(air_pollution_level, respiratory_risk)) +
+  geom_point() +
+  geom_line(aes(y = pred_nls), color = "green", size = 1) +
+  labs(
+    title = "NLS Model: Correct Environmental Fit",
+    x = "Air Pollution Level",
+    y = "Respiratory Risk"
+  ) +
+  theme_minimal()
+```
+
+---
+
+## 9. Other Non-linear Forms
+
+### Exponential Model
+
+$$
+Y = a e^{bX}
+$$
+
+Used for epidemic growth or infectious disease propagation.
+
+```{r}
+#| label: exp
+
+model_exp <- nls(
+  respiratory_risk ~ a * exp(b * air_pollution_level),
+  data = df,
+  start = list(a = 1, b = 0.01)
+)
+
+summary(model_exp)
+```
+
+---
+
+### Power Model
+
+$$
+Y = a X^b
+$$
+
+Common in environmental scaling relationships.
+
+```{r}
+#| label: power
+
+model_power <- nls(
+  respiratory_risk ~ a * air_pollution_level^b,
+  data = df,
+  start = list(a = 1, b = 1)
+)
+
+summary(model_power)
+```
+
+---
+
+### Logarithmic Model
+
+$$
+Y = a \log(X)
+$$
+
+Represents rapid initial increase followed by slowing growth.
+
+```{r}
+#| label: log-model
+
+model_log2 <- nls(
+  respiratory_risk ~ a * log(air_pollution_level + 1),
+  data = df,
+  start = list(a = 10)
+)
+
+summary(model_log2)
+```
+
+---
+
+## 9.1 Self-Starting Non-linear Models
+
+In practice, choosing starting values manually can be difficult.
+
+To simplify this process, R provides several self-starting non-linear models (`SS*`) that automatically estimate reasonable initial values from the data.
+
+This reduces convergence problems and simplifies model fitting.
+
+```{r}
+#| label: nls-auto
+
+model_auto <- nls(
+  respiratory_risk ~ 
+    SSmicmen(air_pollution_level, Rmax, E50),
+  data = df
+)
+
+summary(model_auto)
+```
+
+The function `SSmicmen()` implements the Michaelis–Menten model:
+
+$$
+Y = \frac{R_{max} \cdot X}{E_{50} + X}
+$$
+
+but automatically estimates starting values before optimization begins.
+
+This is particularly useful in epidemiology and environmental health studies where plausible parameter values may not be known in advance.
+
+
+>Self-starting models improve convenience, but they do not eliminate all convergence problems.
+
+> If the data are highly noisy, sparse, or poorly scaled, optimization may still fail.
+
+---
+
+
+## 10. Model Comparison
+
+```{r}
+#| label: aic
+
+data.frame(
+  Model = c(
+    "Linear",
+    "Polynomial",
+    "Log",
+    "NLS",
+    "Exponential",
+    "auto-NLS"
+  ),
+  AIC = c(
+    AIC(model_lm_simple),
+    AIC(model_poly),
+    AIC(model_log),
+    AIC(model_nls),
+    AIC(model_exp),
+    AIC(model_auto)
+  )
+)
+```
+
+### Interpretation
+
+* Lower AIC indicates a better balance between fit and complexity.
+* Large AIC differences suggest structural misspecification.
+
+---
+
+## 11. GAM: Flexible Non-linear Modeling
+
+What if we do not know the true functional form?
+
+Instead of imposing a structure, GAM learns it directly from the data.
+
+---
+
+### 11.1 Complex Environmental Signal
+
+```{r}
+#| label: gam-simulation
+
+set.seed(123)
+
+n <- 400
+
+air_pollution_level <- runif(n, -3, 3)
+
+noise <- rnorm(n, 0, 1)
+
+respiratory_risk <- 
+  4 * sin(3 * air_pollution_level) +
+  cos(0.8 * air_pollution_level) -
+  1.5 * (air_pollution_level^2) +
+  noise
+
+df_gam <- data.frame(
+  air_pollution_level,
+  respiratory_risk
+)
+```
+
+This combines:
+
+* seasonal environmental fluctuations
+* epidemic waves
+* long-term population trends
+
+---
+
+### 11.2 Linear Regression Failure
+
+```{r}
+#| label: gam-lm
+
+model_lm_complex <- lm(
+  respiratory_risk ~ air_pollution_level,
+  data = df_gam
+)
+
+ggplot(df_gam, aes(air_pollution_level, respiratory_risk)) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(method = "lm", color = "red", size = 1.2) +
+  labs(
+    title = "Linear Regression: Total Failure",
+    subtitle = "The model misses oscillations and curvature"
+  ) +
+  theme_minimal()
+```
+
+---
+
+### 11.3 The GAM Idea
+
+$$
+Y = \beta_0 + s(X) + \varepsilon
+$$
+
+Where:
+
+* (s(X)) is a smooth function estimated from the data.
+
+---
+
+### 11.4 GAM Fit
+
+```{r}
+#| label: gam-model
+
+model_gam_complex <- gam(
+  respiratory_risk ~ s(air_pollution_level),
+  data = df_gam,
+  method = "REML"
+)
+
+df_gam$pred_gam <- predict(model_gam_complex)
+```
+
+```{r}
+#| label: gam-plot
+
+ggplot(df_gam, aes(air_pollution_level, respiratory_risk)) +
+  geom_point(alpha = 0.15) +
+  geom_line(aes(y = pred_gam), color = "cyan4", size = 1.5) +
+  geom_smooth(
+    method = "lm",
+    color = "red",
+    linetype = "dashed",
+    se = FALSE
+  ) +
+  labs(
+    title = "GAM Recovery",
+    subtitle = "The spline captures hidden environmental structure"
+  ) +
+  theme_minimal()
+```
+
+---
+
+### 11.5 Smooth Function Visualization
+
+```{r}
+#| label: gam-diagnostics
+
+draw(model_gam_complex) +
+  labs(
+    title = "Estimated Smooth Function",
+    subtitle = "Recovered hidden structure"
+  )
+```
+
+---
+
+### 11.6 Model Comparison
+
+```{r}
+#| label: gam-comparison
+
+results <- data.frame(
+  Model = c("Linear Model", "GAM"),
+  Adjusted_R2 = c(
+    summary(model_lm_complex)$adj.r.squared,
+    summary(model_gam_complex)$r.sq
+  ),
+  AIC = c(
+    AIC(model_lm_complex),
+    AIC(model_gam_complex)
+  )
+)
+
+kable(results, digits = 3)
+```
+
+---
+
+### Interpretation
+
+* Linear model → global trend only
+* GAM → local + global structure
+
+> GAM adapts to the data instead of forcing a predefined shape.
+
+---
+
+## 12. GAM with Multiple Predictors
+
+A hybrid GAM combines smooth and linear terms:
+
+$$
+Y = \beta_0 + s(X_1) + \beta_2 X_2 + \beta_3 X_3 + \varepsilon
+$$
+
+---
+
+### 12.1 Simulation
+
+```{r}
+#| label: gam-multi
+
+set.seed(42)
+
+n <- 200
+
+air_pollution_level <- runif(n, 0, 100)
+
+age <- runif(n, 20, 80)
+
+temperature <- rnorm(n, 25, 5)
+
+respiratory_risk <-
+  4 * sin(air_pollution_level / 10) +
+  cos(air_pollution_level / 20) -
+  0.02 * air_pollution_level^2 +
+  (-0.2 * age) +
+  rnorm(n, 0, 2)
+
+df2 <- data.frame(
+  air_pollution_level,
+  age,
+  temperature,
+  respiratory_risk
+)
+```
+
+---
+
+### 12.2 Wrong Approach: Smoothing Everything
+
+```{r}
+#| label: gam-all
+
+gam_all <- gam(
+  respiratory_risk ~ 
+    s(air_pollution_level) +
+    s(age) +
+    s(temperature),
+  data = df2
+)
+
+plot(gam_all, pages = 1)
+```
+
+### Problem
+
+* unnecessary complexity
+* reduced interpretability
+* not all variables require smoothing
+
+---
+
+### 12.3 Hybrid GAM
+
+```{r}
+#| label: gam-hybrid
+
+gam_hybrid <- gam(
+  respiratory_risk ~
+    s(air_pollution_level) +
+    age +
+    temperature,
+  data = df2
+)
+
+plot(gam_hybrid, shade = TRUE)
+```
+
+---
+
+### 12.4 Interpretation
+
+```{r}
+#| label: gam-summary
+
+summary(gam_hybrid)
+```
+
+Interpretation of effective degrees of freedom (edf):
+
+* edf ≈ 1 → approximately linear
+* edf > 1 → non-linear relationship
+
+
+> Because the data were simulated from a highly structured non-linear process, the GAM is able to recover almost the entire signal. In real epidemiological datasets, performance is usually lower due to measurement error, unmeasured confounding, and population heterogeneity.
+
+---
+
+### 12.5 Diagnostics
+
+```{r}
+#| label: gam-check
+#| fig-width: 10
+#| fig-height: 8
+
+appraise(model_gam_complex)
+
+gam.check(model_gam_complex)
+
+appraise(gam_hybrid)
+
+gam.check(gam_hybrid)
+```
+
+These diagnostics evaluate:
+
+* residual structure
+* adequacy of smoothing
+* model assumptions
+
+---
+
+## 12.6 Tensor Product Smooths: Joint Non-linear Effects
+
+```{r}
+#| label: tensor-simulation
+
+set.seed(123)
+
+n <- 300
+
+air_pollution_level <- runif(n, 0, 100)
+
+temperature <- runif(n, 10, 40)
+
+respiratory_risk <-
+  0.03 * air_pollution_level^1.2 +
+  0.04 * temperature^2 +
+  0.02 * air_pollution_level * temperature +
+  rnorm(n, 0, 3)
+
+df_tensor <- data.frame(
+  air_pollution_level,
+  temperature,
+  respiratory_risk
+)
+```
+
+### Tensoriel GAM
+```{r}
+#| label: tensor-gam
+
+model_tensor <- gam(
+  respiratory_risk ~ 
+    te(air_pollution_level, temperature),
+  data = df_tensor,
+  method = "REML"
+)
+
+summary(model_tensor)
+```
+
+
+```{r}
+#| label: tensor-plot
+
+vis.gam(
+  model_tensor,
+  type = "response",
+  plot.type = "persp",
+  phi = 30,
+  theta = 30,
+  n.grid = 50,
+  color = "terrain"
+)
+```
+
+The surface plot reveals that respiratory risk is not determined by pollution or temperature independently.
+
+Instead, the risk emerges from their interaction:
+
+high pollution combined with high temperature produces the highest risk,
+while moderate exposure levels may have limited impact.
+
+This illustrates a core principle of modern epidemiology:
+
+health outcomes often emerge from interacting systems rather than isolated variables.
+
+---
+
+## 12.7 Common Diagnostic Problems in GAMs
+
+Model diagnostics are not merely technical checks.
+
+They help identify:
+- structural misspecification,
+- distributional problems,
+- overfitting,
+- insufficient smoothing,
+- and violations of statistical assumptions.
+
+| Diagnostic Issue | Visual Symptom | Statistical Interpretation | Corrective Action |
+|---|---|---|---|
+| Non-linearity | Patterns or “waves” in residuals vs fitted plot | The model misses structural complexity (underfitting) | Increase basis dimension (`k`) or add non-linear terms |
+| Heteroscedasticity | “Fan” or “funnel” shape in residuals | Non-constant variance | Use another distribution family (`Gamma`, `nb`) or transform the response |
+| Non-normality | QQ-plot strongly deviates from the line | Residual distribution is skewed or heavy-tailed | Investigate outliers or consider robust distributions |
+| Autocorrelation | Residual clustering across time or space | Violation of independence assumption | Use GAMM with correlation structures or spatial effects |
+| Under-smoothing | Low p-value in `gam.check()` (`k-index < 1`) | Basis dimension too small | Increase `k` |
+| Overfitting | Very high edf with poor generalization | Model captures noise instead of signal | Increase smoothing penalty (`gamma`) or reduce `k` |
+
+---
+
+## 12.8 Understanding Basis Functions in GAMs
+
+In GAMs, smooth functions are constructed using basis functions (`bs`).
+
+The default basis in `mgcv` is:
+
+```r
+bs = "tp"
+```
+
+which stands for **thin plate regression splines**.
+
+Thin plate splines are widely used because they:
+
+* do not require manual knot placement,
+* are generally stable and flexible,
+* work well as general-purpose smoothers,
+* automatically balance flexibility and smoothness.
+
+### Common Alternative Bases
+
+| Basis  | Meaning                     | Main Idea                                                                   |
+| ------ | --------------------------- | --------------------------------------------------------------------------- |
+| `"tp"` | Thin plate spline           | Default general-purpose smoother                                            |
+| `"cr"` | Cubic regression spline     | Faster computation with fixed knots                                         |
+| `"cs"` | Cubic spline with shrinkage | Allows unnecessary smooth terms to shrink toward zero                       |
+| `"ps"` | Penalized spline            | Flexible smoothing with explicit penalty control                            |
+| `"ds"` | Duchon spline               | Generalization of thin plate splines for complex multidimensional smoothing |
+
+---
+
+## Interaction Smooths in GAMs
+
+Instead of a simple smooth term:
+
+```r
+s(x)
+```
+
+GAMs also allow smooth interactions between variables.
+
+### Common Interaction Terms
+
+| Function   | Interpretation                                                      |
+| ---------- | ------------------------------------------------------------------- |
+| `te(x, z)` | Main smooth effects + interaction between `x` and `z`               |
+| `ti(x, z)` | Interaction smooth only                                             |
+| `t2(x, z)` | Advanced tensor-product smooth with more flexible penalty structure |
+
+### Conceptual Difference
+
+* `te()` models both the individual effects and their interaction.
+* `ti()` isolates only the interaction component.
+* `t2()` is mainly used in advanced GAM formulations requiring complex penalty decomposition.
+
+---
+
+## 13. Final Takeaway
+
+* Linear models are often insufficient in environmental and epidemiological systems.
+* Transformations may distort interpretation.
+* NLS models respect mechanistic relationships.
+* GAM provides flexibility when the functional form is unknown.
+* Hybrid GAMs balance interpretability and flexibility.
+
+---
+
+### Final Message
+
+> The goal is not to fit the simplest model,
+> but the model that best represents the underlying environmental and epidemiological mechanism.
+
+> In Global Health and One Health research, non-linearity is the rule rather than the exception.
